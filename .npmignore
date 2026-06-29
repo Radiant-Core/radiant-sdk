@@ -1,0 +1,9 @@
+# Source is published as compiled dist/ only.
+src/
+node_modules/
+tsconfig.json
+tsup.config.ts
+*.tsbuildinfo
+.gitignore
+.DS_Store
+.github/
