@@ -186,6 +186,18 @@ const status = await client.subscribe(me.address, (newStatus) => {
 | Units | `rxdToPhotons`, `photonsToRxd` |
 | Errors | `RadiantSdkError`, `InsufficientFundsError`, `TokenBurnGuardError`, `ElectrumError`, `ValidationError` |
 
+See **[docs/API.md](docs/API.md)** for the full reference (every export, options,
+and return types), and the hosted guide at
+**[radiantcore.org/docs/sdk.html](https://radiantcore.org/docs/sdk.html)**.
+
+---
+
+## Documentation
+
+- **[API reference](docs/API.md)** — every export, with options and return types.
+- **[Hosted guide](https://radiantcore.org/docs/sdk.html)** — narrative walkthrough on radiantcore.org.
+- **[Changelog](CHANGELOG.md)** · **[Contributing](CONTRIBUTING.md)**
+
 ---
 
 ## Design notes
