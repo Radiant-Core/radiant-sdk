@@ -215,10 +215,14 @@ const status = await client.subscribe(me.address, (newStatus) => {
 
 ## Building from source
 
+Requires Node 20.19+ or 22+ (`require(ESM)` support; radiantjs pulls in an
+ESM-only dependency).
+
 ```bash
-pnpm install
-pnpm build      # tsup -> dist/ (ESM + CJS + d.ts)
-pnpm typecheck  # tsc --noEmit
+npm install
+npm run build      # tsup -> dist/ (ESM + CJS + d.ts)
+npm run typecheck  # tsc --noEmit
+npm test           # node --test against the built bundle
 ```
 
 ## License

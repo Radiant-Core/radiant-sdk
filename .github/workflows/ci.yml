@@ -9,10 +9,12 @@ on:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    # radiantjs require()s an ESM-only @noble/secp256k1, so the runtime floor is
+    # require(ESM) support: Node 20.19+ / 22+. Node 18 is EOL.
     strategy:
       fail-fast: false
       matrix:
-        node-version: ["18", "20", "22"]
+        node-version: ["20", "22", "24"]
     name: Node ${{ matrix.node-version }}
     steps:
       - uses: actions/checkout@v4
