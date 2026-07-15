@@ -65,6 +65,9 @@ async function fund(address, rxd) {
 
 const newWallet = () => sdk.HDWallet.fromMnemonic(sdk.HDWallet.generateMnemonic(), { network: NET });
 
+/** The exact ftScript an address+ref produces — for matching outputs on chain. */
+const ftScriptFor = (address, ref) => sdk.ftScript(address, ref, NET);
+
 test("regtest: mint an NFT, then transfer it — both settle on chain", async (t) => {
   if (!live) return t.skip("no regtest node");
 
@@ -154,5 +157,117 @@ test("regtest: the node REJECTS an output carrying an unsatisfied require-ref", 
     () => rpc("sendrawtransaction", [built.hex]),
     /reference|require|scriptpubkey|non-mandatory|mandatory/i,
     "node accepted an output with an unsatisfied require-ref",
+  );
+});
+
+test("regtest: FT partial-send — accumulates, sends, and returns change on chain", async (t) => {
+  if (!live) return t.skip("no regtest node");
+
+  const w = newWallet();
+  const alice = w.deriveKey(0);
+  const bob = w.deriveKey(1);
+
+  // Mint a fungible supply to alice.
+  const SUPPLY = 500n;
+  const mint = await sdk.mintFT({
+    client,
+    address: alice.address,
+    wif: alice.wif,
+    fundingUtxos: [await fund(alice.address, 10)],
+    network: NET,
+    ticker: "HARN",
+    supply: SUPPLY,
+    metadata: { name: "harness-ft" },
+  });
+  await mine();
+
+  const reveal = await rpc("getrawtransaction", [mint.revealTxid, true]);
+  const ftOut = reveal.vout.find((o) => sdk.parseFtScript(o.scriptPubKey.hex).ref === mint.ref);
+  assert.ok(ftOut, "reveal produced no FT output");
+  const held = {
+    txid: mint.revealTxid,
+    vout: ftOut.n,
+    value: BigInt(Math.round(ftOut.value * 1e8)),
+    script: ftOut.scriptPubKey.hex,
+  };
+  assert.equal(held.value, SUPPLY, "minted supply is the FT output's photon value");
+
+  // Send 50 of the 500 — the thing transferToken cannot express.
+  const SEND = 50n;
+  const moved = await sdk.transferFungible({
+    client,
+    address: alice.address,
+    wif: alice.wif,
+    tokenUtxos: [held],
+    toAddress: bob.address,
+    amount: SEND,
+    fundingUtxos: [await fund(alice.address, 5)],
+    network: NET,
+  });
+  await mine();
+
+  const settled = await rpc("getrawtransaction", [moved.txid, true]);
+  assert.ok(settled.confirmations >= 1, "FT transfer did not confirm");
+  assert.equal(moved.sent, SEND);
+  assert.equal(moved.change, SUPPLY - SEND);
+
+  // Bob holds exactly 50.
+  const bobFt = ftScriptFor(bob.address, mint.ref);
+  const toBob = settled.vout.find((o) => o.scriptPubKey.hex === bobFt);
+  assert.ok(toBob, "no FT output to bob");
+  assert.equal(BigInt(Math.round(toBob.value * 1e8)), SEND, "bob did not receive exactly 50");
+
+  // Alice keeps exactly 450 — this is the one that matters. Omitting FT change
+  // does not error, it BURNS the remainder: the covenant enforces
+  // inputs >= outputs, so under-emitting is permitted and permanent.
+  const aliceFt = ftScriptFor(alice.address, mint.ref);
+  const backToAlice = settled.vout.find((o) => o.scriptPubKey.hex === aliceFt);
+  assert.ok(backToAlice, "no FT change output — the remainder would have been burned");
+  assert.equal(BigInt(Math.round(backToAlice.value * 1e8)), SUPPLY - SEND, "FT change is wrong");
+
+  // Conservation: token photons in == token photons out.
+  const tokenOut = settled.vout
+    .filter((o) => sdk.parseFtScript(o.scriptPubKey.hex).ref === mint.ref)
+    .reduce((s, o) => s + BigInt(Math.round(o.value * 1e8)), 0n);
+  assert.equal(tokenOut, SUPPLY, "token value was not conserved");
+});
+
+test("regtest: FT partial-send refuses to mix two different tokens", async (t) => {
+  if (!live) return t.skip("no regtest node");
+
+  const w = newWallet();
+  const alice = w.deriveKey(0);
+
+  // Two distinct FT mints; feeding both to one send would burn one of them.
+  const a = await sdk.mintFT({
+    client, address: alice.address, wif: alice.wif,
+    fundingUtxos: [await fund(alice.address, 10)], network: NET,
+    ticker: "AAA", supply: 100n, metadata: { name: "aaa" },
+  });
+  await mine();
+  const b = await sdk.mintFT({
+    client, address: alice.address, wif: alice.wif,
+    fundingUtxos: [await fund(alice.address, 10)], network: NET,
+    ticker: "BBB", supply: 100n, metadata: { name: "bbb" },
+  });
+  await mine();
+
+  const utxoOf = async (m) => {
+    const r = await rpc("getrawtransaction", [m.revealTxid, true]);
+    const o = r.vout.find((v) => sdk.parseFtScript(v.scriptPubKey.hex).ref === m.ref);
+    return { txid: m.revealTxid, vout: o.n, value: BigInt(Math.round(o.value * 1e8)), script: o.scriptPubKey.hex };
+  };
+
+  const mixed = [await utxoOf(a), await utxoOf(b)];
+  const funding = [await fund(alice.address, 5)];
+  await assert.rejects(
+    async () =>
+      sdk.transferFungible({
+        client, address: alice.address, wif: alice.wif,
+        tokenUtxos: mixed,
+        toAddress: alice.address, amount: 10n,
+        fundingUtxos: funding, network: NET,
+      }),
+    /different tokens|mix refs/,
   );
 });

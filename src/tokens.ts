@@ -28,7 +28,7 @@ import { selectRxdFunding } from "./utxo.js";
 import { packRef, p2pkhScript, parseNftScript, parseFtScript } from "./script.js";
 import { buildTx, type BuildTxInput } from "./tx.js";
 import type { ElectrumClient } from "./client.js";
-import type { NetworkName, Utxo } from "./types.js";
+import type { NetworkName, TxOutput, Utxo } from "./types.js";
 
 const MAGIC = Buffer.from(GLYPH_MAGIC_BYTES);
 
@@ -428,4 +428,135 @@ export async function transferToken(
 
   await params.client.broadcastTx(built.hex);
   return { txid: built.txid, hex: built.hex, ref };
+}
+
+// ---- Fungible partial-send --------------------------------------------------
+
+export interface TransferFungibleParams {
+  client: ElectrumClient;
+  /** Current owner address (signs the token inputs, pays the fee, gets change). */
+  address: string;
+  /** Current owner WIF. */
+  wif: string;
+  /**
+   * FT UTXOs to draw from. They must ALL be the same token — see the ref check
+   * in {@link transferFungible}. Pass the owner's whole balance for that ref;
+   * only as many as needed are spent.
+   */
+  tokenUtxos: Utxo[];
+  /** Recipient address. */
+  toAddress: string;
+  /**
+   * Amount to send, in the token's base units. For a Glyph FT the amount IS the
+   * output's photon value — the covenant sums photons per code-script.
+   */
+  amount: bigint;
+  /** Token-free RXD funding UTXOs for `address` to cover the fee. */
+  fundingUtxos: Utxo[];
+  feeRate?: bigint;
+  network?: NetworkName;
+}
+
+/**
+ * Send PART of a fungible balance, accumulating across UTXOs and returning the
+ * remainder as FT change.
+ *
+ * This is what {@link transferToken} cannot do: that moves one UTXO whole, so
+ * "send 50 of my 500" is inexpressible on it.
+ *
+ * The token outputs conserve the accumulated sum EXACTLY. That is not tidiness —
+ * the FT covenant enforces `sum(inputs) >= sum(outputs)` for its code-script
+ * (`OP_CODESCRIPTHASHVALUESUM_UTXOS ... OP_GREATERTHANOREQUAL OP_VERIFY`), so it
+ * permits burning and only forbids minting. Emit less than you spent and the
+ * difference is destroyed, silently and permanently. Hence the change output
+ * whenever the accumulation overshoots.
+ *
+ * The RXD arithmetic falls out of that conservation: token value in equals token
+ * value out, so the only surplus is the RXD funding, and `buildTx`'s change is
+ * exactly `funding - fee`.
+ */
+export async function transferFungible(
+  params: TransferFungibleParams,
+): Promise<{ txid: string; hex: string; ref: string; sent: bigint; change: bigint }> {
+  const network = params.network ?? "mainnet";
+  const feeRate = params.feeRate ?? MIN_RELAY_FEE_RATE[network];
+  const { amount, tokenUtxos } = params;
+
+  if (amount <= 0n) {
+    throw new ValidationError("transferFungible: amount must be positive");
+  }
+  if (!tokenUtxos.length) {
+    throw new ValidationError("transferFungible: no token UTXOs given");
+  }
+
+  // Every input must be the SAME token. Mixing refs would sum two different
+  // tokens into one output script: the other token's covenant would see its
+  // inputs spent with no matching output and destroy the lot.
+  let ref: string | undefined;
+  for (const u of tokenUtxos) {
+    const parsed = u.script ? parseFtScript(u.script) : {};
+    if (!parsed.ref) {
+      throw new ValidationError(
+        `transferFungible: ${u.txid}:${u.vout} is not an FT output (its script must be the on-chain ftScript)`,
+      );
+    }
+    if (ref && parsed.ref !== ref) {
+      throw new ValidationError(
+        "transferFungible: token UTXOs are for different tokens — refusing to mix refs, it would burn one of them",
+      );
+    }
+    ref = parsed.ref;
+  }
+
+  // Accumulate largest-first: fewest inputs, smallest fee.
+  const sorted = [...tokenUtxos].sort((a, b) => (a.value < b.value ? 1 : a.value > b.value ? -1 : 0));
+  const spend: Utxo[] = [];
+  let sum = 0n;
+  for (const u of sorted) {
+    spend.push(u);
+    sum += u.value;
+    if (sum >= amount) break;
+  }
+  if (sum < amount) {
+    throw new ValidationError(
+      `transferFungible: insufficient token balance — have ${sum}, need ${amount}`,
+    );
+  }
+
+  const change = sum - amount;
+  const outputs: TxOutput[] = [{ script: ftScript(params.toAddress, ref!, network), value: amount }];
+  // Conserve the remainder back to the sender, or it burns (see above).
+  if (change > 0n) {
+    outputs.push({ script: ftScript(params.address, ref!, network), value: change });
+  }
+
+  // Only the fee needs funding — token value is conserved input -> output.
+  const selection = selectRxdFunding(params.fundingUtxos, 0n, feeRate, {
+    baseOutputCount: outputs.length,
+    extraInputBytes: BigInt(148 * spend.length), // the token inputs we add below
+    withChange: true,
+  });
+
+  const inputs: BuildTxInput[] = [
+    ...spend.map((u) => ({ txid: u.txid, vout: u.vout, value: u.value, script: u.script })),
+    ...selection.inputs.map((u) => ({
+      txid: u.txid,
+      vout: u.vout,
+      value: u.value,
+      script: u.script || undefined,
+    })),
+  ];
+
+  const built = buildTx({
+    address: params.address,
+    wif: params.wif,
+    inputs,
+    outputs,
+    addChange: true,
+    feeRate,
+    network,
+  });
+
+  await params.client.broadcastTx(built.hex);
+  return { txid: built.txid, hex: built.hex, ref: ref!, sent: amount, change };
 }

@@ -100,6 +100,8 @@ export {
   mintFT,
   mintNFT,
   transferToken,
+  transferFungible,
+  type TransferFungibleParams,
   encodeGlyph,
   ftScript,
   nftScript,
