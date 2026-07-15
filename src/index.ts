@@ -54,6 +54,11 @@ export {
   zeroRefs,
   packRef,
   unpackRef,
+  parseP2pkhScript,
+  parseNftScript,
+  parseFtScript,
+  tokenScriptKind,
+  type TokenScriptKind,
 } from "./script.js";
 
 // ElectrumX client

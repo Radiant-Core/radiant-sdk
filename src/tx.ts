@@ -17,7 +17,48 @@ import {
 import { selectRxdFunding } from "./utxo.js";
 import { p2pkhScript } from "./script.js";
 import { ValidationError } from "./errors.js";
+import { MAX_REASONABLE_FEE_RATE } from "./constants.js";
 import type { NetworkName, TxOutput, Utxo } from "./types.js";
+
+/**
+ * Refuse to hand miners an absurd fee.
+ *
+ * Nothing else catches this. A fee is just "inputs minus outputs", so every way
+ * of getting it wrong looks like a perfectly valid transaction:
+ *
+ *  - Unit confusion. Radiant's floor is 10,000 photons/BYTE; the same number as
+ *    sats/kB is off by 1,000x, and the tx still broadcasts — it just pays a
+ *    thousand times over.
+ *  - No change output. With `addChange: false`, the ENTIRE excess over the
+ *    outputs is the fee. Over-fund by an RXD and you have donated an RXD.
+ *  - Sub-dust change. radiantjs silently DROPS a change output below its dust
+ *    threshold and rolls it into the fee instead (transaction.js: `if
+ *    (changeAmount >= Transaction.DUST_AMOUNT)`), so the last few hundred
+ *    photons vanish quietly.
+ *
+ * All of these are one-way: once mined, the money is the miner's. So we compare
+ * the real fee against `size * MAX_REASONABLE_FEE_RATE` (2x the network floor)
+ * and throw rather than broadcast. The 20% tolerance absorbs the size headroom
+ * buildTx adds; it is a unit-confusion guard, not relay policy.
+ */
+function assertSaneFee(tx: any, network: NetworkName): void {
+  const sizeBytes = BigInt(tx.toString().length / 2);
+  // Measured against the NETWORK ceiling, deliberately not the caller's rate.
+  // Trusting `feeRate` here would defeat the guard entirely: a units slip *is* a
+  // wrong feeRate, so a reference derived from it would move to meet the mistake
+  // and wave it through. A caller that genuinely wants >2x the floor has to say
+  // so somewhere this function can't be fooled by.
+  const reference = MAX_REASONABLE_FEE_RATE[network];
+  const ceiling = (sizeBytes * reference * 12n) / 10n; // +20% for size headroom
+  const actual = BigInt(tx.getFee?.() ?? 0);
+  if (actual > ceiling) {
+    throw new ValidationError(
+      `buildTx: fee ${actual} photons is above the sanity ceiling ${ceiling} for a ${sizeBytes}-byte tx ` +
+        `(${network} reference ${reference} photons/byte). Refusing to build — this is almost always a units ` +
+        `mistake or an over-funded change-less tx, and the excess would be paid to miners irrecoverably.`,
+    );
+  }
+}
 
 /** An input to {@link buildTx}. Provide `script` for non-default (token) inputs. */
 export interface BuildTxInput {
@@ -163,6 +204,8 @@ export function buildTx(params: BuildTxParams): BuiltTx {
   // Sign standard (from-style) inputs; manual inputs are handled by the hooks.
   tx.sign(privKeys[0]);
   if (typeof tx.seal === "function") tx.seal();
+
+  assertSaneFee(tx, network);
 
   const hex: string = tx.toString();
   const resolvedOutputs = tx.outputs.map((o: any) => ({

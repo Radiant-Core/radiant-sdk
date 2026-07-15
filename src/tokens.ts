@@ -25,7 +25,7 @@ import {
 } from "./constants.js";
 import { ValidationError } from "./errors.js";
 import { selectRxdFunding } from "./utxo.js";
-import { packRef, p2pkhScript } from "./script.js";
+import { packRef, p2pkhScript, parseNftScript, parseFtScript } from "./script.js";
 import { buildTx, type BuildTxInput } from "./tx.js";
 import type { ElectrumClient } from "./client.js";
 import type { NetworkName, Utxo } from "./types.js";
@@ -152,21 +152,33 @@ export function parseTokenRef(scriptHex: string): string | null {
 }
 
 /**
- * Re-bind a token script to a new owner by swapping the embedded owner P2PKH
- * (`76a914 <20-byte hash> 88ac`). Kind-agnostic: preserves any covenant
- * preamble exactly, which is the safest way to transfer a token output.
+ * Build the output script that moves a token to `toAddress`.
+ *
+ * This REBUILDS the script canonically from the token's kind + singleton ref
+ * rather than editing the on-chain script in place. That distinction is the
+ * whole point:
+ *
+ * A mutable NFT (a WAVE name) whose target has been set is forced by its
+ * covenant into the AUTH form — `OP_REQUIREINPUTREF <mutRef> <sigHash> OP_2DROP
+ * OP_STATESEPARATOR` ahead of the singleton. Swapping just the P2PKH would
+ * carry that preamble into the new OUTPUT, and `OP_REQUIREINPUTREF` is a
+ * CREATION-time rule: the node then demands `mutRef` among the tx's INPUTS,
+ * which a plain transfer doesn't have, and rejects it
+ * (`invalid-transaction-reference-operations`). It would also re-commit a stale
+ * per-update scriptSig hash.
+ *
+ * Dropping the preamble is safe: at SPEND time the opcode only pushes its
+ * operand (the adjacent OP_2DROP discards it), so spending an auth-form UTXO
+ * into a plain singleton needs no mutable input.
  */
-function rebindOwner(scriptHex: string, toAddress: string, network: NetworkName): string {
-  void network; // P2PKH hash is network-independent (see p2pkhScript).
-  const newPkh = Address.fromString(toAddress).hashBuffer.toString("hex");
-  const re = /76a914[0-9a-f]{40}88ac/i;
-  const matches = scriptHex.match(new RegExp(re, "gi"));
-  if (!matches || matches.length !== 1) {
-    throw new ValidationError(
-      "rebindOwner: expected exactly one owner P2PKH in the token script",
-    );
-  }
-  return scriptHex.replace(re, `76a914${newPkh}88ac`);
+function tokenTransferScript(scriptHex: string, toAddress: string, network: NetworkName): string {
+  const nft = parseNftScript(scriptHex);
+  if (nft.ref) return nftScript(toAddress, nft.ref, network);
+  const ft = parseFtScript(scriptHex);
+  if (ft.ref) return ftScript(toAddress, ft.ref, network);
+  throw new ValidationError(
+    "transferToken: tokenUtxo.script is not a recognised NFT or FT output script",
+  );
 }
 
 // ---- Mint orchestration -----------------------------------------------------
@@ -357,9 +369,12 @@ export interface TransferTokenParams {
 }
 
 /**
- * Transfer a Glyph token (FT or NFT) to a new owner. The token output's value
- * is preserved (for FT this preserves the amount); the covenant preamble is
- * carried forward unchanged and only the owner P2PKH is re-bound.
+ * Transfer a Glyph token (FT or NFT, including a WAVE name) to a new owner.
+ *
+ * Moves the UTXO whole: the token output's value is preserved, which for an FT
+ * preserves the amount. To send PART of an FT balance (which needs multi-UTXO
+ * accumulation and a change output), that is a different operation and this is
+ * not it.
  */
 export async function transferToken(
   params: TransferTokenParams,
@@ -373,8 +388,11 @@ export async function transferToken(
       "transferToken: tokenUtxo.script is required to rebuild the token output",
     );
   }
-  const newScript = rebindOwner(tokenUtxo.script, params.toAddress, network);
-  const ref = parseTokenRef(tokenUtxo.script);
+  const newScript = tokenTransferScript(tokenUtxo.script, params.toAddress, network);
+  // The token's OWN ref — read shape-exactly. `parseTokenRef` would return the
+  // first ref opcode in the script, which on an auth-form NFT is the mutable
+  // ref, not the token's.
+  const ref = parseNftScript(tokenUtxo.script).ref ?? parseFtScript(tokenUtxo.script).ref ?? null;
 
   // Fund just the fee; the token value is conserved input -> output.
   const selection = selectRxdFunding(params.fundingUtxos, 0n, feeRate, {

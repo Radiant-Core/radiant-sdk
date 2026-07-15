@@ -29,6 +29,21 @@ export const MIN_RELAY_FEE_RATE: Record<NetworkName, bigint> = {
 };
 
 /**
+ * Upper sanity bound for {@link MIN_RELAY_FEE_RATE}, in photons/byte — 2x the
+ * network floor. Derived, so the two can never drift apart.
+ *
+ * This is NOT a policy limit; it's the reference `buildTx`'s fee guard measures
+ * against. It exists to catch unit confusion (paying sats/kB where photons/byte
+ * is meant is a 1,000x error) and over-funded change-less transactions, both of
+ * which otherwise hand the whole difference to miners with no error at all.
+ */
+export const MAX_REASONABLE_FEE_RATE: Record<NetworkName, bigint> = {
+  mainnet: MIN_RELAY_FEE_RATE.mainnet * 2n,
+  testnet: MIN_RELAY_FEE_RATE.testnet * 2n,
+  regtest: MIN_RELAY_FEE_RATE.regtest * 2n,
+};
+
+/**
  * Dust limit in photons. Outputs below this are non-standard. Token-carrying
  * outputs typically ride at exactly the dust value.
  */

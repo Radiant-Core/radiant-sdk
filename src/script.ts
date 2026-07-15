@@ -178,3 +178,58 @@ export function unpackRef(ref: string): { txid: string; vout: number } {
   const vout = buf.readUInt32LE(32);
   return { txid, vout };
 }
+
+// ---- Token-script parsing ---------------------------------------------------
+//
+// These are shape-exact, anchored matchers — deliberately not "find a ref
+// anywhere" scans. Knowing that a script IS an NFT (rather than merely
+// ref-bearing), and which ref is its SINGLETON, is what makes it safe to rebuild
+// a token output or to check that a counterparty's UTXO holds what they claim.
+// `parseTokenRef` cannot answer either question: it returns the first ref opcode
+// it sees, which on an auth-form NFT is the MUTABLE ref, not the token's.
+
+/** Owner address hash from a bare P2PKH script, if that's all it is. */
+export function parseP2pkhScript(scriptHex: string): { addressHash?: string } {
+  const [, addressHash] = scriptHex.toLowerCase().match(/^76a914([0-9a-f]{40})88ac$/) || [];
+  return { addressHash };
+}
+
+/**
+ * Parse an NFT output script into its singleton ref + owner hash.
+ *
+ * Matches the plain singleton:
+ *   OP_PUSHINPUTREFSINGLETON <ref> OP_DROP <P2PKH>
+ *   d8 <ref:72> 75 76a914 <h160:40> 88ac
+ *
+ * ...and the AUTH form that a mutable NFT (a WAVE name) is forced into after a
+ * target update — the mutable covenant makes the token output re-commit the
+ * mutable ref plus its scriptSig hash:
+ *   ( OP_REQUIREINPUTREF <ref> <scriptSigHash> OP_2DROP )+ OP_STATESEPARATOR
+ *   OP_PUSHINPUTREFSINGLETON <ref> OP_DROP <P2PKH>
+ *
+ * The singleton ref and owner are always the TRAILING `d8…/p2pkh`, so the
+ * optional preamble is skipped without changing what's captured. Returns {} for
+ * anything that isn't an NFT script.
+ */
+export function parseNftScript(scriptHex: string): { ref?: string; addressHash?: string } {
+  const pattern = /^(?:d1[0-9a-f]{72}20[0-9a-f]{64}6d)*(?:bd)?d8([0-9a-f]{72})7576a914([0-9a-f]{40})88ac$/;
+  const [, ref, addressHash] = scriptHex.toLowerCase().match(pattern) || [];
+  return { ref, addressHash };
+}
+
+/** Parse an FT output script into its ref + owner hash. Returns {} if not an FT. */
+export function parseFtScript(scriptHex: string): { ref?: string; addressHash?: string } {
+  const pattern = /^76a914([0-9a-f]{40})88acbdd0([0-9a-f]{72})dec0e9aa76e378e4a269e69d$/;
+  const [, addressHash, ref] = scriptHex.toLowerCase().match(pattern) || [];
+  return { ref, addressHash };
+}
+
+/** What kind of token a script is, if any. */
+export type TokenScriptKind = "nft" | "ft" | null;
+
+/** Classify a token output script by SHAPE (not by a loose ref scan). */
+export function tokenScriptKind(scriptHex: string): TokenScriptKind {
+  if (parseNftScript(scriptHex).ref) return "nft";
+  if (parseFtScript(scriptHex).ref) return "ft";
+  return null;
+}

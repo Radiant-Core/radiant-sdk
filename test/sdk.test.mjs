@@ -115,3 +115,116 @@ test("waveLabel: normalisation + validation", () => {
   assert.equal(sdk.waveLabel("mail.alice.rxd"), "mail.alice");
   assert.throws(() => sdk.waveLabel(".rxd"));
 });
+
+// ---- Token script parsing ---------------------------------------------------
+// These matter because `parseTokenRef` scans for the FIRST ref opcode, which on
+// an auth-form (mutable / WAVE) NFT is the MUTABLE ref — not the token's own.
+
+const REF = "ab".repeat(36); // 72 hex
+const MUT_REF = "cd".repeat(36);
+const SIG_HASH = "ef".repeat(32); // 64 hex
+const PKH = "11".repeat(20);
+const P2PKH = `76a914${PKH}88ac`;
+
+const PLAIN_NFT = `d8${REF}75${P2PKH}`;
+// A WAVE name after a target update: the mutable covenant forces the auth form.
+const AUTH_NFT = `d1${MUT_REF}20${SIG_HASH}6dbdd8${REF}75${P2PKH}`;
+const FT = `${P2PKH}bdd0${REF}dec0e9aa76e378e4a269e69d`;
+
+test("parseNftScript: plain singleton", () => {
+  assert.deepEqual(sdk.parseNftScript(PLAIN_NFT), { ref: REF, addressHash: PKH });
+});
+
+test("parseNftScript: auth form yields the SINGLETON ref, not the mutable one", () => {
+  const { ref, addressHash } = sdk.parseNftScript(AUTH_NFT);
+  assert.equal(ref, REF);
+  assert.notEqual(ref, MUT_REF); // the trap
+  assert.equal(addressHash, PKH);
+});
+
+test("parseTokenRef returns the MUTABLE ref on an auth-form NFT (why parseNftScript exists)", () => {
+  // Documents the exact footgun: a loose "first ref opcode" scan is wrong here.
+  assert.equal(sdk.parseTokenRef(AUTH_NFT), MUT_REF);
+  assert.equal(sdk.parseNftScript(AUTH_NFT).ref, REF);
+});
+
+test("parseFtScript / parseP2pkhScript", () => {
+  assert.deepEqual(sdk.parseFtScript(FT), { ref: REF, addressHash: PKH });
+  assert.deepEqual(sdk.parseP2pkhScript(P2PKH), { addressHash: PKH });
+  assert.equal(sdk.parseP2pkhScript(PLAIN_NFT).addressHash, undefined); // not a bare p2pkh
+});
+
+test("parsers are shape-exact: they reject the other kind", () => {
+  assert.equal(sdk.parseNftScript(FT).ref, undefined);
+  assert.equal(sdk.parseFtScript(PLAIN_NFT).ref, undefined);
+  assert.equal(sdk.parseNftScript("deadbeef").ref, undefined);
+});
+
+test("tokenScriptKind classifies by shape", () => {
+  assert.equal(sdk.tokenScriptKind(PLAIN_NFT), "nft");
+  assert.equal(sdk.tokenScriptKind(AUTH_NFT), "nft");
+  assert.equal(sdk.tokenScriptKind(FT), "ft");
+  assert.equal(sdk.tokenScriptKind(P2PKH), null);
+});
+
+// ---- Fee sanity guard -------------------------------------------------------
+// A fee is just "inputs - outputs", so every way of getting it wrong looks like
+// a valid tx. These pin the guard that stops the money reaching a miner.
+
+const NET = "regtest";
+const feeWallet = sdk.HDWallet.fromMnemonic(MN, { network: NET });
+const feeKey = feeWallet.deriveKey(0);
+
+const utxo = (value) => ({
+  txid: "a".repeat(64),
+  vout: 0,
+  value,
+  script: sdk.p2pkhScript(feeKey.address, NET),
+});
+
+test("buildTx: a normal change-bearing tx passes the fee guard", () => {
+  const built = sdk.buildTx({
+    address: feeKey.address,
+    wif: feeKey.wif,
+    inputs: [utxo(100_000_000n)],
+    outputs: [{ script: sdk.p2pkhScript(feeKey.address, NET), value: 50_000_000n }],
+    addChange: true,
+    feeRate: 1_000n, // regtest min-relay
+    network: NET,
+  });
+  assert.ok(built.hex.length > 0);
+});
+
+test("buildTx: REFUSES to burn the excess on an over-funded change-less tx", () => {
+  // 1 RXD in, 0.01 RXD out, no change → the other 0.99 RXD is silently the fee.
+  assert.throws(
+    () =>
+      sdk.buildTx({
+        address: feeKey.address,
+        wif: feeKey.wif,
+        inputs: [utxo(100_000_000n)],
+        outputs: [{ script: sdk.p2pkhScript(feeKey.address, NET), value: 1_000_000n }],
+        addChange: false,
+        feeRate: 1_000n,
+        network: NET,
+      }),
+    /fee .* above the sanity ceiling/,
+  );
+});
+
+test("buildTx: REFUSES a sats/kB-for-photons/byte units slip", () => {
+  // 1_000_000 is the sats/kB figure; as photons/byte it's a 1000x overpay.
+  assert.throws(
+    () =>
+      sdk.buildTx({
+        address: feeKey.address,
+        wif: feeKey.wif,
+        inputs: [utxo(100_000_000n)],
+        outputs: [{ script: sdk.p2pkhScript(feeKey.address, NET), value: 1_000_000n }],
+        addChange: true,
+        feeRate: 1_000_000n,
+        network: NET,
+      }),
+    /units mistake|sanity ceiling/,
+  );
+});
