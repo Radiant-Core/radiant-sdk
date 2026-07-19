@@ -1,6 +1,6 @@
 {
   "name": "@radiant-core/sdk",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "TypeScript SDK for building Radiant (RXD) dapps: ElectrumX WebSocket client, ref-safe UTXO selection, Glyph token ops, WAVE name resolution, and SLIP-0044 HD wallets. Wraps @radiant-core/radiantjs.",
   "type": "module",
   "license": "MIT",
