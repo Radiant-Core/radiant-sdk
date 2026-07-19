@@ -3,6 +3,18 @@
 All notable changes to `@radiant-core/sdk` are documented here. This project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Token discovery** (`getRecentTokens`, `getTokensByType`,
+  `GLYPH_TOKEN_TYPE`) — global newest-first asset lists over the RXinDexer v4
+  discovery indexes (`/glyphs/recent`, `/glyphs/by-type/{id}?order=recent`),
+  cursor-paginated with typed pages (`TokenPage`, `GlyphTokenSummary`).
+  Enables incremental watermark sync: walk once, then on later runs page
+  newest-first and stop below your saved `deploy_height`. Requires an indexer
+  running Glyph DB schema v4 (deployed to the public API 2026-07-18).
+
 ## [0.1.0] — 2026-06-28
 
 Initial release.

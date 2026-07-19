@@ -8,6 +8,7 @@
  * - utxo   : ref-safe RXD funding selection (never burns tokens)
  * - tokens : Glyph FT/NFT mint + transfer (commit/reveal)
  * - wave   : WAVE name resolution
+ * - discovery : global newest-first token lists (RXinDexer v4)
  * - units  : photon <-> RXD conversion (BigInt photons internally)
  */
 
@@ -120,6 +121,17 @@ export {
   waveLabel,
   type WaveResolveOptions,
 } from "./wave.js";
+
+// Token discovery (RXinDexer v4 — newest-first global asset lists)
+export {
+  getRecentTokens,
+  getTokensByType,
+  GLYPH_TOKEN_TYPE,
+  type GlyphTokenTypeId,
+  type GlyphTokenSummary,
+  type TokenPage,
+  type DiscoveryOptions,
+} from "./discovery.js";
 
 // radiantjs escape hatch (advanced users who need the raw library)
 export { radiantjs } from "./radiantjs.js";

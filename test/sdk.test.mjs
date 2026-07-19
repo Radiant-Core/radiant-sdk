@@ -228,3 +228,65 @@ test("buildTx: REFUSES a sats/kB-for-photons/byte units slip", () => {
     /units mistake|sanity ceiling/,
   );
 });
+
+// ---- Discovery (RXinDexer v4 lists) ----------------------------------------
+// Offline: fetchImpl injection; validates URL construction, param encoding,
+// page mapping, and error paths.
+
+function fakeFetch(expectUrl, payload, status = 200) {
+  const calls = [];
+  const fn = async (url) => {
+    calls.push(url);
+    if (expectUrl) assert.equal(url, expectUrl);
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      statusText: status === 200 ? "OK" : "ERR",
+      json: async () => payload,
+    };
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+const PAGE = {
+  tokens: [{ ref: "aa_0", ref_hex: "aa".repeat(36), type: 2, type_name: "NFT",
+             protocols: [2], name: "T", ticker: null, deploy_height: 447786,
+             deploy_txid: "bb".repeat(32), is_spent: false }],
+  next_cursor: "R1H_-SrW",
+};
+
+test("getRecentTokens: url + page mapping", async () => {
+  const f = fakeFetch("https://radiantcore.org/api/glyphs/recent?limit=2", PAGE);
+  const page = await sdk.getRecentTokens({ limit: 2, fetchImpl: f });
+  assert.equal(page.tokens.length, 1);
+  assert.equal(page.tokens[0].deploy_height, 447786);
+  assert.equal(page.nextCursor, "R1H_-SrW");
+});
+
+test("getRecentTokens: cursor + type filter are query-encoded", async () => {
+  const f = fakeFetch(
+    "https://radiantcore.org/api/glyphs/recent?limit=1&cursor=R1H_-SrW&type_id=2",
+    { tokens: [], next_cursor: null },
+  );
+  const page = await sdk.getRecentTokens({
+    limit: 1, cursor: "R1H_-SrW", typeId: sdk.GLYPH_TOKEN_TYPE.NFT, fetchImpl: f,
+  });
+  assert.equal(page.nextCursor, null);
+});
+
+test("getTokensByType: recent order + custom restBase", async () => {
+  const f = fakeFetch("http://localhost:8000/glyphs/by-type/5?order=recent", PAGE);
+  const page = await sdk.getTokensByType(sdk.GLYPH_TOKEN_TYPE.WAVE, {
+    order: "recent", restBase: "http://localhost:8000/", fetchImpl: f,
+  });
+  assert.equal(page.tokens[0].ref, "aa_0");
+});
+
+test("getTokensByType: rejects invalid typeId; surfaces HTTP errors", async () => {
+  await assert.rejects(() => sdk.getTokensByType(99, { fetchImpl: fakeFetch(null, {}) }));
+  await assert.rejects(
+    () => sdk.getTokensByType(2, { fetchImpl: fakeFetch(null, {}, 500) }),
+    /HTTP 500/,
+  );
+});
