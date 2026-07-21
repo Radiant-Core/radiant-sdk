@@ -2,8 +2,8 @@
  * Network constants, default endpoints, and protocol parameters.
  *
  * Sources of truth (verified against the Radiant ecosystem, 2026-06):
- * - Min-relay fee: 10,000 photons/byte on mainnet since the V2 upgrade
- *   (block 410,000). Testnet/regtest use 1,000. Pin these; do not "tune" them.
+ * - Min-relay fee: 10,000 photons/byte on every network since the V2 upgrade
+ *   (activation height differs per chain). Pin these; do not "tune" them.
  * - HD coin type: SLIP-0044 512 (Radiant), default since radiantjs v3.0.0.
  * - Public ElectrumX is reachable on :443 only (Caddy TLS terminates to the
  *   indexer). 50010-50012 are firewalled off the public host.
@@ -20,12 +20,23 @@ export const RADIANT_COIN_TYPE = 512;
 
 /**
  * Min-relay fee rate in photons per byte, keyed by network.
- * Mainnet = 10,000 since the V2 upgrade (block 410,000).
+ *
+ * 10,000 on EVERY network since the V2 upgrade. V2 raised the protocol floor
+ * from 1,000 to 10,000 on all four chains — it just activates at a different
+ * height each (mainnet 410,000, testnet 1,000, regtest 200), and only after a
+ * further 5,000-block grace period.
+ *
+ * Test networks are NOT exempt. They were listed at 1,000 here on the
+ * assumption the raise was mainnet-only; past activation+grace those chains
+ * reject a 1,000 transaction with "min relay fee not met (code 66)".
+ *
+ * Nor can a node opt out: radiantd's `GetEffectiveMinRelayFee` returns
+ * `max(-minrelaytxfee, floor)`, so the flag can only raise the floor.
  */
 export const MIN_RELAY_FEE_RATE: Record<NetworkName, bigint> = {
   mainnet: 10_000n,
-  testnet: 1_000n,
-  regtest: 1_000n,
+  testnet: 10_000n,
+  regtest: 10_000n,
 };
 
 /**
